@@ -14,6 +14,7 @@ from monthly_order_ingestion.bigquery_execution import (
 )
 from monthly_order_ingestion.config import SOURCES, SheetKind
 from monthly_order_ingestion.drive_discovery import TargetFile
+from monthly_order_ingestion.google_clients import AUTHORIZED_USER_JSON_ENV, authorized_user_info_from_env
 
 
 def test_select_target_files_requires_exact_name_and_google_sheet() -> None:
@@ -199,3 +200,29 @@ def test_manifest_success_zero_rows_sql_uses_literal_target_metadata() -> None:
     assert "'cancel' AS sheet_kind" in sql
     assert "0 AS row_count" in sql
     assert "status = 'success'" in sql
+
+
+def test_authorized_user_info_supports_json_env(monkeypatch=None) -> None:
+    token_json = (
+        '{"client_id":"client-id.apps.googleusercontent.com",'
+        '"client_secret":"client-secret",'
+        '"refresh_token":"refresh-token",'
+        '"type":"authorized_user"}'
+    )
+    if monkeypatch is None:
+        import os
+
+        previous = os.environ.get(AUTHORIZED_USER_JSON_ENV)
+        os.environ[AUTHORIZED_USER_JSON_ENV] = token_json
+        try:
+            token_info = authorized_user_info_from_env()
+        finally:
+            if previous is None:
+                os.environ.pop(AUTHORIZED_USER_JSON_ENV, None)
+            else:
+                os.environ[AUTHORIZED_USER_JSON_ENV] = previous
+    else:
+        monkeypatch.setenv(AUTHORIZED_USER_JSON_ENV, token_json)
+        token_info = authorized_user_info_from_env()
+
+    assert token_info["refresh_token"] == "refresh-token"
