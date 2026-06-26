@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+import json
+import os
+from typing import TYPE_CHECKING
 
-import google.auth
-from google.cloud import bigquery
-from googleapiclient.discovery import build
+if TYPE_CHECKING:
+    from google.cloud import bigquery
 
 from monthly_order_ingestion.drive_discovery import DriveFile, parse_drive_time
 from monthly_order_ingestion.manifest import ManifestRecord
@@ -16,7 +18,7 @@ from monthly_order_ingestion.sheet_selection import SheetInfo
 class GoogleClients:
     drive: object
     sheets: object
-    bigquery: bigquery.Client
+    bigquery: object
 
 
 GOOGLE_API_SCOPES = (
@@ -25,13 +27,53 @@ GOOGLE_API_SCOPES = (
     "https://www.googleapis.com/auth/bigquery",
 )
 
+DRIVE_SHEETS_SCOPES = (
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+)
+
+BIGQUERY_SCOPES = ("https://www.googleapis.com/auth/cloud-platform",)
+
+AUTHORIZED_USER_JSON_ENV = "GOOGLE_AUTHORIZED_USER_JSON"
+AUTHORIZED_USER_FILE_ENV = "GOOGLE_AUTHORIZED_USER_FILE"
+
+
+def authorized_user_info_from_env() -> dict | None:
+    if token_json := os.getenv(AUTHORIZED_USER_JSON_ENV):
+        return json.loads(token_json)
+    if token_file := os.getenv(AUTHORIZED_USER_FILE_ENV):
+        with open(token_file, encoding="utf-8") as file_obj:
+            return json.load(file_obj)
+    return None
+
+
+def drive_sheets_credentials():
+    import google.auth
+    from google.oauth2.credentials import Credentials
+
+    if authorized_user_info := authorized_user_info_from_env():
+        return Credentials.from_authorized_user_info(authorized_user_info, scopes=DRIVE_SHEETS_SCOPES)
+    credentials, _ = google.auth.default(scopes=GOOGLE_API_SCOPES)
+    return credentials
+
+
+def bigquery_credentials():
+    import google.auth
+
+    credentials, _ = google.auth.default(scopes=BIGQUERY_SCOPES)
+    return credentials
+
 
 def build_google_clients(project_id: str) -> GoogleClients:
-    credentials, _ = google.auth.default(scopes=GOOGLE_API_SCOPES)
+    from google.cloud import bigquery
+    from googleapiclient.discovery import build
+
+    drive_credentials = drive_sheets_credentials()
+    bq_credentials = bigquery_credentials()
     return GoogleClients(
-        drive=build("drive", "v3", credentials=credentials),
-        sheets=build("sheets", "v4", credentials=credentials),
-        bigquery=bigquery.Client(project=project_id, credentials=credentials),
+        drive=build("drive", "v3", credentials=drive_credentials),
+        sheets=build("sheets", "v4", credentials=drive_credentials),
+        bigquery=bigquery.Client(project=project_id, credentials=bq_credentials),
     )
 
 
@@ -109,11 +151,13 @@ def read_sheet_values(sheets_service: object, spreadsheet_id: str, sheet_title: 
 
 
 def fetch_manifest_records(
-    client: bigquery.Client,
+    client: "bigquery.Client",
     manifest_table: str,
     source_file_ids: Iterable[str],
     sheet_kind: str,
 ) -> dict[str, ManifestRecord]:
+    from google.cloud import bigquery
+
     ids = list(source_file_ids)
     if not ids:
         return {}

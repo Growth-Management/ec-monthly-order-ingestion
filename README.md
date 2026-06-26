@@ -22,7 +22,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 gcloud auth application-default login \
-  --scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive.readonly
+  --scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive.readonly,https://www.googleapis.com/auth/spreadsheets.readonly
 
 python scripts/run_monthly_order_ingestion.py \
   --mode delta \
@@ -37,6 +37,8 @@ Cloud Run Jobs + Cloud Scheduler で運用します。
 
 - Cloud Run Job: `scripts/run_monthly_order_ingestion.py --mode delta`
 - Cloud Scheduler: 日次などの定期実行
+- Drive / Sheets 読み取り: Secret Manager に保存した篠原アカウントの authorized user token
+- BigQuery 書き込み: Cloud Run Job のサービスアカウント
 - 0行シートも manifest に `success` / `row_count = 0` を記録
 
 詳細は [docs/full_load_and_automation_ja.md](docs/full_load_and_automation_ja.md) を参照してください。
