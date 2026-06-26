@@ -9,6 +9,7 @@ from test_monthly_order_ingestion import (  # noqa: E402
     test_cancel_fallback_key_uses_updated_at_and_source_row_number,
     test_bigquery_execution_plan_includes_success_and_error_manifest_sql,
     test_decide_ingestion_uses_successful_manifest_modified_time,
+    test_authorized_user_info_supports_json_env,
     test_manifest_success_zero_rows_sql_uses_literal_target_metadata,
     test_normalize_headers_known_and_duplicate_names,
     test_normalize_rows_serializes_dates_from_xlsx,
@@ -24,6 +25,7 @@ def main() -> None:
     tests = [
         test_select_target_files_requires_exact_name_and_google_sheet,
         test_decide_ingestion_uses_successful_manifest_modified_time,
+        test_authorized_user_info_supports_json_env,
         test_required_sheet_selection,
         test_normalize_headers_known_and_duplicate_names,
         test_normalize_rows_adds_common_columns_and_stable_hash,
