@@ -34,11 +34,11 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Drive 読み取りと BigQuery 書き込みに使う Application Default Credentials を設定する。
+Cloud Shell で手動実行する場合は、篠原アカウントの Application Default Credentials を設定する。
 
 ```bash
 gcloud auth application-default login \
-  --scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive.readonly
+  --scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive.readonly,https://www.googleapis.com/auth/spreadsheets.readonly
 ```
 
 既存データを取り込む。`delta` は manifest を見て、未登録または Drive `modifiedTime` が進んだファイルだけ処理する。すでに完了した 202606 はスキップされる。
@@ -123,7 +123,13 @@ ORDER BY source, source_yyyymm, sheet_kind;
 
 Google の公式ドキュメントでも、Cloud Run Jobs は完了して終了するジョブ実行、Cloud Scheduler は Cloud Run Job のスケジュール実行に使える構成として案内されている。
 
-## 4. サービスアカウント準備
+## 4. 認証方式
+
+Drive フォルダをサービスアカウントに共有できない場合は、篠原アカウントで発行した authorized user token を Secret Manager に保存し、Cloud Run Job 実行時に Drive / Sheets 読み取りだけその token を使う。
+
+BigQuery 書き込みは Cloud Run Job のサービスアカウントで実行する。これにより、Drive / Sheets は篠原アカウント、BigQuery はサービスアカウントという責務分離にする。
+
+## 5. サービスアカウント準備
 
 例:
 
@@ -143,21 +149,54 @@ gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
 gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member "serviceAccount:${SA_EMAIL}" \
   --role "roles/bigquery.dataEditor"
+
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member "serviceAccount:${SA_EMAIL}" \
+  --role "roles/secretmanager.secretAccessor"
 ```
 
-Drive 側では、pta / fabli の対象フォルダをこのサービスアカウントのメールアドレスに共有する。
+Cloud Run Job の実行主体としてこのサービスアカウントを使う。Drive 側のフォルダ共有は行わず、篠原アカウントの token を使う。
 
-```text
-pta folder:   1GJ8Z3gKTb9h8nG6n01amNbM4Ortkxe64
-fabli folder: 1GfVxojNBBLKd-E0q1c58ysaxc00lGQ8j
+## 6. 篠原アカウントの token を Secret Manager に保存する
+
+Secret Manager API を有効化する。
+
+```bash
+gcloud services enable secretmanager.googleapis.com
 ```
 
-## 5. Cloud Run Job としてデプロイする
+篠原アカウントで Drive / Sheets 読み取りスコープを含む ADC を発行する。
+
+```bash
+gcloud auth application-default login \
+  --scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive.readonly,https://www.googleapis.com/auth/spreadsheets.readonly
+```
+
+ADC の JSON を Secret Manager に保存する。
+
+```bash
+SECRET_NAME="monthly-order-google-authorized-user"
+ADC_FILE="${HOME}/.config/gcloud/application_default_credentials.json"
+
+gcloud secrets create "${SECRET_NAME}" \
+  --replication-policy="automatic" \
+  --data-file="${ADC_FILE}"
+```
+
+既存 secret を更新する場合:
+
+```bash
+gcloud secrets versions add "${SECRET_NAME}" \
+  --data-file="${ADC_FILE}"
+```
+
+## 7. Cloud Run Job としてデプロイする
 
 ```bash
 PROJECT_ID="ice-ec-project"
 REGION="asia-northeast1"
 SA_EMAIL="monthly-order-ingestion@${PROJECT_ID}.iam.gserviceaccount.com"
+SECRET_NAME="monthly-order-google-authorized-user"
 
 gcloud run jobs deploy monthly-order-ingestion \
   --project "${PROJECT_ID}" \
@@ -166,6 +205,7 @@ gcloud run jobs deploy monthly-order-ingestion \
   --service-account "${SA_EMAIL}" \
   --max-retries 0 \
   --task-timeout 24h \
+  --set-secrets GOOGLE_AUTHORIZED_USER_JSON="${SECRET_NAME}:latest" \
   --command python \
   --args scripts/run_monthly_order_ingestion.py,--mode,delta
 ```
@@ -179,7 +219,7 @@ gcloud run jobs execute monthly-order-ingestion \
   --wait
 ```
 
-## 6. スケジュール設定
+## 8. スケジュール設定
 
 Cloud Console で以下を設定する。
 
@@ -197,10 +237,11 @@ Cloud Console で以下を設定する。
 
 月次ファイルの更新が月初以外にも起きるため、日次で差分だけ拾う運用が安全。
 
-## 7. 運用上の注意
+## 9. 運用上の注意
 
 - `--mode delta` を通常運用に使う。
 - `--mode full` は再処理が必要なときだけ使う。
 - キャンセルシートは fallback key `order_name + lineitem_id + updated_at + source_row_number` を使用する。
 - 0行シートも manifest に `success` / `row_count = 0` を残す。
 - 1ファイルまたは1シートで失敗しても、他のシート処理は継続し、失敗は manifest に `error` として残す。
+- 篠原アカウントの token が失効した場合は、Cloud Shell で `gcloud auth application-default login` を再実行し、Secret Manager に新しい version を追加する。
