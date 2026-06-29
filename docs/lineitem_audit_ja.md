@@ -6,6 +6,29 @@
 
 正しい `lineitem_id` は原則として注文時の初期値です。キャンセル後レコードや出荷レコード側の `lineitem_id` を根拠なく正とみなさず、初期注文行から一意に特定できる場合だけ補正候補にします。
 
+## 補正データの格納方針
+
+`ice_ec_source` の取り込み元テーブルは更新しません。監査証跡として source 層をそのまま保持します。
+
+補正後データは `ice_ec_aggregation` dataset に別テーブルとして作成します。まず pta の shipping だけを検証対象にし、以下のテーブルへ格納します。
+
+`ice-ec-project.ice_ec_aggregation.monthly_shipping_pta_lineitem_corrected`
+
+この補正後テーブルでは、元の shipping 行を全件保持し、レビュー承認された補正対象だけ以下を更新します。
+
+- `lineitem_id`
+- `raw_payload.lineitem_id`
+- `updated_ingestion_at`
+
+加えて、補正監査用の列を追加します。
+
+- `original_lineitem_id`
+- `corrected_lineitem_id`
+- `lineitem_id_corrected`
+- `lineitem_correction_classification`
+- `lineitem_correction_reason`
+- `lineitem_correction_audited_at`
+
 ## 対象テーブル
 
 - pta
@@ -118,7 +141,7 @@ DDL レビュー観点:
 
 ## 現時点の BigQuery MCP 読み取り確認結果
 
-2026-06-29 JST 時点の確認です。DDL や書き込みは実行していません。
+2026-06-29 JST 時点の確認です。
 
 対象テーブル件数:
 
@@ -168,10 +191,33 @@ DDL レビュー観点:
 | pta | shipping | `observed_sku_blank` | 1 |
 | pta | shipping | `single_initial_lineitem_but_sku_changed` | 5 |
 
+## pta 補正後テーブル検証結果
+
+GCP コンソールで `ice_ec_aggregation.monthly_shipping_pta_lineitem_corrected` を作成後、BigQuery MCP で読み取り確認しました。
+
+| check | result |
+| --- | ---: |
+| total rows | 30,238 |
+| corrected rows | 5 |
+| original_lineitem_id rows | 5 |
+| corrected lineitem_id matches correction reference | 5 |
+| raw_payload.lineitem_id matches correction reference | 5 |
+| rows differing from source monthly_shipping_pta | 5 |
+
+補正済み 5 行:
+
+| order_name | original_lineitem_id | corrected_lineitem_id | shipping_yyyymm | initial_order_yyyymm |
+| --- | ---: | ---: | --- | --- |
+| pTa-16543 | 15001785762017 | 14978830237921 | 202508 | 202506 |
+| pTa-22105 | 15910321520865 | 15873515323617 | 202603 | 202601 |
+| pTa-22168 | 15904308363489 | 15880636170465 | 202602 | 202601 |
+| pTa-23846 | 16578045051105 | 16570221166817 | 202606 | 202605 |
+| pTa-2559 | 13042825527521 | 13040940581089 | 202311 | 202307 |
+
 ## 次の実装候補
 
-1. 監査結果保存テーブルを GCP コンソールで作成する。
-2. Cloud Run Job に監査 runner を追加するか、取り込み job の後続ステップとして summary/details を実行する。
+1. 下流集計で `ice_ec_aggregation.monthly_shipping_pta_lineitem_corrected` を参照する。
+2. fabli は現時点で補正 0 件のため、必要なら補正なし複製テーブルを作る。
 3. `no_initial_order_for_order_name` が出る月の注文ファイル取り込み範囲や source_yyyymm を確認する。
-4. `single_initial_lineitem_but_sku_changed` は補正候補に近いが、自動補正ではなくレビュー承認後に扱う。
+4. `multi_initial_lineitems_sku_changed_or_missing` 4 行の手動レビューを継続する。
 5. `auto_correctable` が出た場合の補正 SQL は、監査結果確認後に別途レビュー付きで作成する。
