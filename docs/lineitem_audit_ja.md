@@ -37,6 +37,27 @@
   - 上記に該当しない通常行
   - 監査結果テーブルへ保存する INSERT SQL では除外する
 
+## audit_reason
+
+`audit_classification` は大分類、`audit_reason` は要確認理由です。
+
+- `unique_initial_order_sku_lineitem_mismatch`
+  - 初期注文 SKU は一意だが、対象行の `lineitem_id` が異なる
+- `unique_initial_order_sku_no_mismatch`
+  - 初期注文 SKU は一意で、`lineitem_id` の不一致はない
+- `non_unique_initial_lineitem_for_order_sku`
+  - `order_name + lineitem_sku` に複数の初期 `lineitem_id` があり、一意に補正できない
+- `observed_sku_blank`
+  - 対象行側の SKU が空欄
+- `no_initial_order_for_order_name`
+  - 注文テーブル側に同じ `order_name` がない
+- `observed_lineitem_id_exists_in_initial_order_with_different_or_blank_sku`
+  - 対象行の `lineitem_id` は注文テーブルに存在するが、SKU が違う、または空欄
+- `single_initial_lineitem_but_sku_changed`
+  - 同じ `order_name` の初期注文行が 1 明細だけなので候補は見えるが、SKU が一致しないため自動確定しない
+- `multi_initial_lineitems_sku_changed_or_missing`
+  - 同じ `order_name` に複数の初期注文明細があり、SKU 不一致のため補正先を一意に決められない
+
 ## BigQuery 確認方針
 
 テーブル schema 確認と件数・分布確認は BigQuery MCP の読み取りで行います。
@@ -85,8 +106,15 @@ python scripts/run_monthly_order_audit.py --query insert
 設計:
 
 - partition: `DATE(audited_at)`
-- cluster: `source, audit_classification, order_name, observed_source_yyyymm`
+- cluster: `source, audit_classification, audit_reason, order_name`
 - 保存対象: `out_of_scope` 以外
+
+DDL レビュー観点:
+
+- `audit_reason` を必須列にして、要確認理由を後追いできるようにする
+- `initial_order_lineitem_ids` / `initial_order_skus` を配列で保持し、要確認行の候補を監査結果だけで確認できるようにする
+- `observed_lineitem_id_exists_in_initial_order` を保持し、SKU だけが違うケースを切り分ける
+- `expected_initial_lineitem_id` は `order_name + lineitem_sku` で一意に特定できた場合の値に限定する
 
 ## 現時点の BigQuery MCP 読み取り確認結果
 
@@ -126,9 +154,24 @@ python scripts/run_monthly_order_audit.py --query insert
 - pta `needs_review_non_unique_initial_lineitem`: 47 行
 - fabli `needs_review_no_matching_initial_order_sku`: 159 行
 
+`needs_review_no_matching_initial_order_sku` の理由別内訳:
+
+| source | sheet | audit_reason | rows |
+| --- | --- | --- | ---: |
+| fabli | cancel | `no_initial_order_for_order_name` | 14 |
+| fabli | expired | `no_initial_order_for_order_name` | 8 |
+| fabli | shipping | `no_initial_order_for_order_name` | 137 |
+| pta | cancel | `no_initial_order_for_order_name` | 1 |
+| pta | cancel | `observed_sku_blank` | 2 |
+| pta | shipping | `multi_initial_lineitems_sku_changed_or_missing` | 4 |
+| pta | shipping | `no_initial_order_for_order_name` | 149 |
+| pta | shipping | `observed_sku_blank` | 1 |
+| pta | shipping | `single_initial_lineitem_but_sku_changed` | 5 |
+
 ## 次の実装候補
 
 1. 監査結果保存テーブルを GCP コンソールで作成する。
 2. Cloud Run Job に監査 runner を追加するか、取り込み job の後続ステップとして summary/details を実行する。
-3. `needs_review_no_matching_initial_order_sku` について、SKU 変更前後を判定する追加キー候補を検討する。
-4. `auto_correctable` が出た場合の補正 SQL は、監査結果確認後に別途レビュー付きで作成する。
+3. `no_initial_order_for_order_name` が出る月の注文ファイル取り込み範囲や source_yyyymm を確認する。
+4. `single_initial_lineitem_but_sku_changed` は補正候補に近いが、自動補正ではなくレビュー承認後に扱う。
+5. `auto_correctable` が出た場合の補正 SQL は、監査結果確認後に別途レビュー付きで作成する。
