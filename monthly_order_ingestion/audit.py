@@ -14,6 +14,20 @@ class AuditClassification(StrEnum):
     OUT_OF_SCOPE = "out_of_scope"
 
 
+class AuditReason(StrEnum):
+    UNIQUE_INITIAL_ORDER_SKU_LINEITEM_MISMATCH = "unique_initial_order_sku_lineitem_mismatch"
+    UNIQUE_INITIAL_ORDER_SKU_NO_MISMATCH = "unique_initial_order_sku_no_mismatch"
+    NON_UNIQUE_INITIAL_LINEITEM_FOR_ORDER_SKU = "non_unique_initial_lineitem_for_order_sku"
+    OBSERVED_SKU_BLANK = "observed_sku_blank"
+    NO_INITIAL_ORDER_FOR_ORDER_NAME = "no_initial_order_for_order_name"
+    OBSERVED_LINEITEM_ID_EXISTS_IN_INITIAL_ORDER_WITH_DIFFERENT_OR_BLANK_SKU = (
+        "observed_lineitem_id_exists_in_initial_order_with_different_or_blank_sku"
+    )
+    SINGLE_INITIAL_LINEITEM_BUT_SKU_CHANGED = "single_initial_lineitem_but_sku_changed"
+    MULTI_INITIAL_LINEITEMS_SKU_CHANGED_OR_MISSING = "multi_initial_lineitems_sku_changed_or_missing"
+    OUT_OF_SCOPE = "out_of_scope"
+
+
 AUDIT_RESULT_COLUMNS = [
     "source",
     "sheet_type",
@@ -22,6 +36,11 @@ AUDIT_RESULT_COLUMNS = [
     "observed_lineitem_id",
     "expected_initial_lineitem_id",
     "baseline_lineitem_ids",
+    "initial_order_lineitem_id_count",
+    "initial_order_sku_count",
+    "initial_order_lineitem_ids",
+    "initial_order_skus",
+    "observed_lineitem_id_exists_in_initial_order",
     "observed_source_yyyymm",
     "initial_order_yyyymm",
     "involved_months",
@@ -38,6 +57,7 @@ AUDIT_RESULT_COLUMNS = [
     "updated_at",
     "cancelled_at",
     "audit_classification",
+    "audit_reason",
     "audited_at",
 ]
 
@@ -97,6 +117,32 @@ order_line_baseline AS (
     AND lineitem_sku IS NOT NULL AND lineitem_sku != ''
   GROUP BY source, order_name, lineitem_sku
 ),
+order_name_baseline AS (
+  SELECT
+    source,
+    order_name,
+    COUNT(*) AS initial_order_row_count,
+    COUNT(DISTINCT lineitem_id) AS initial_order_lineitem_id_count,
+    COUNT(DISTINCT lineitem_sku) AS initial_order_sku_count,
+    ARRAY_AGG(DISTINCT lineitem_id IGNORE NULLS ORDER BY lineitem_id) AS initial_order_lineitem_ids,
+    ARRAY_AGG(DISTINCT lineitem_sku IGNORE NULLS ORDER BY lineitem_sku) AS initial_order_skus
+  FROM all_rows
+  WHERE sheet_type = 'order'
+    AND order_name IS NOT NULL AND order_name != ''
+  GROUP BY source, order_name
+),
+order_lineitem_baseline AS (
+  SELECT
+    source,
+    order_name,
+    lineitem_id,
+    COUNT(*) AS initial_same_lineitem_rows
+  FROM all_rows
+  WHERE sheet_type = 'order'
+    AND order_name IS NOT NULL AND order_name != ''
+    AND lineitem_id IS NOT NULL AND lineitem_id != ''
+  GROUP BY source, order_name, lineitem_id
+),
 order_month_flags AS (
   SELECT
     source,
@@ -120,6 +166,11 @@ audit_rows AS (
     r.lineitem_id AS observed_lineitem_id,
     b.first_order_line.lineitem_id AS expected_initial_lineitem_id,
     b.baseline_lineitem_ids,
+    ob.initial_order_lineitem_id_count,
+    ob.initial_order_sku_count,
+    ob.initial_order_lineitem_ids,
+    ob.initial_order_skus,
+    COALESCE(lb.initial_same_lineitem_rows, 0) > 0 AS observed_lineitem_id_exists_in_initial_order,
     r.source_yyyymm AS observed_source_yyyymm,
     b.first_order_line.source_yyyymm AS initial_order_yyyymm,
     f.involved_months,
@@ -145,12 +196,38 @@ audit_rows AS (
         AND f.cancel_row_count > 0 THEN '{AuditClassification.TARGET_NO_MISMATCH.value}'
       ELSE '{AuditClassification.OUT_OF_SCOPE.value}'
     END AS audit_classification,
+    CASE
+      WHEN b.order_name IS NOT NULL AND b.baseline_lineitem_id_count != 1
+        THEN '{AuditReason.NON_UNIQUE_INITIAL_LINEITEM_FOR_ORDER_SKU.value}'
+      WHEN b.order_name IS NOT NULL AND r.lineitem_id != b.first_order_line.lineitem_id
+        THEN '{AuditReason.UNIQUE_INITIAL_ORDER_SKU_LINEITEM_MISMATCH.value}'
+      WHEN b.order_name IS NOT NULL
+        THEN '{AuditReason.UNIQUE_INITIAL_ORDER_SKU_NO_MISMATCH.value}'
+      WHEN r.lineitem_sku IS NULL OR r.lineitem_sku = ''
+        THEN '{AuditReason.OBSERVED_SKU_BLANK.value}'
+      WHEN ob.order_name IS NULL
+        THEN '{AuditReason.NO_INITIAL_ORDER_FOR_ORDER_NAME.value}'
+      WHEN COALESCE(lb.initial_same_lineitem_rows, 0) > 0
+        THEN '{AuditReason.OBSERVED_LINEITEM_ID_EXISTS_IN_INITIAL_ORDER_WITH_DIFFERENT_OR_BLANK_SKU.value}'
+      WHEN ob.initial_order_lineitem_id_count = 1
+        THEN '{AuditReason.SINGLE_INITIAL_LINEITEM_BUT_SKU_CHANGED.value}'
+      WHEN ob.initial_order_lineitem_id_count > 1
+        THEN '{AuditReason.MULTI_INITIAL_LINEITEMS_SKU_CHANGED_OR_MISSING.value}'
+      ELSE '{AuditReason.OUT_OF_SCOPE.value}'
+    END AS audit_reason,
     CURRENT_TIMESTAMP() AS audited_at
   FROM all_rows r
   LEFT JOIN order_line_baseline b
     ON r.source = b.source
    AND r.order_name = b.order_name
    AND r.lineitem_sku = b.lineitem_sku
+  LEFT JOIN order_name_baseline ob
+    ON r.source = ob.source
+   AND r.order_name = ob.order_name
+  LEFT JOIN order_lineitem_baseline lb
+    ON r.source = lb.source
+   AND r.order_name = lb.order_name
+   AND r.lineitem_id = lb.lineitem_id
   JOIN order_month_flags f
     ON r.source = f.source
    AND r.order_name = f.order_name
@@ -203,13 +280,14 @@ SELECT
   source,
   sheet_type,
   audit_classification,
+  audit_reason,
   COUNT(*) AS candidate_row_count,
   COUNT(DISTINCT order_name) AS candidate_order_count,
   COUNTIF(order_shipping_month_count >= 2 AND order_month_count > 0 AND shipping_month_count > 0) AS cross_month_order_shipping_row_count,
   COUNTIF(order_shipping_month_count >= 2 AND order_month_count > 0 AND shipping_month_count > 0 AND cancel_row_count > 0) AS cross_month_with_cancel_row_count
 FROM audit_rows
-GROUP BY source, sheet_type, audit_classification
-ORDER BY source, sheet_type, audit_classification;"""
+GROUP BY source, sheet_type, audit_classification, audit_reason
+ORDER BY source, sheet_type, audit_classification, audit_reason;"""
 
 
 def create_audit_result_table_sql(table_ref: str) -> str:
@@ -221,6 +299,11 @@ def create_audit_result_table_sql(table_ref: str) -> str:
   observed_lineitem_id STRING,
   expected_initial_lineitem_id STRING,
   baseline_lineitem_ids ARRAY<STRING>,
+  initial_order_lineitem_id_count INT64,
+  initial_order_sku_count INT64,
+  initial_order_lineitem_ids ARRAY<STRING>,
+  initial_order_skus ARRAY<STRING>,
+  observed_lineitem_id_exists_in_initial_order BOOL,
   observed_source_yyyymm STRING,
   initial_order_yyyymm STRING,
   involved_months ARRAY<STRING>,
@@ -237,10 +320,11 @@ def create_audit_result_table_sql(table_ref: str) -> str:
   updated_at TIMESTAMP,
   cancelled_at TIMESTAMP,
   audit_classification STRING NOT NULL,
+  audit_reason STRING NOT NULL,
   audited_at TIMESTAMP NOT NULL
 )
 PARTITION BY DATE(audited_at)
-CLUSTER BY source, audit_classification, order_name, observed_source_yyyymm;"""
+CLUSTER BY source, audit_classification, audit_reason, order_name;"""
 
 
 def insert_audit_results_sql(table_ref: str, source: str | None = None) -> str:
