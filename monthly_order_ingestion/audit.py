@@ -14,26 +14,54 @@ class AuditClassification(StrEnum):
     OUT_OF_SCOPE = "out_of_scope"
 
 
+AUDIT_RESULT_COLUMNS = [
+    "source",
+    "sheet_type",
+    "order_name",
+    "observed_lineitem_sku",
+    "observed_lineitem_id",
+    "expected_initial_lineitem_id",
+    "baseline_lineitem_ids",
+    "observed_source_yyyymm",
+    "initial_order_yyyymm",
+    "involved_months",
+    "order_month_count",
+    "shipping_month_count",
+    "order_shipping_month_count",
+    "cancel_row_count",
+    "expired_row_count",
+    "source_file_id",
+    "source_file_name",
+    "source_row_number",
+    "row_hash",
+    "created_at",
+    "updated_at",
+    "cancelled_at",
+    "audit_classification",
+    "audited_at",
+]
+
+
 @dataclass(frozen=True)
 class AuditSqlPlan:
     summary_sql: str
     detail_sql: str
     cross_month_sql: str
     result_table_ddl_sql: str
+    result_table_insert_sql: str
 
 
-def _source_filter(source: str | None) -> str:
+def _source_items(source: str | None):
     if source is None:
-        return ""
+        return SOURCES.items()
     if source not in SOURCES:
         raise ValueError(f"unknown source: {source}")
-    return f"\nWHERE source = '{source}'"
+    return [(source, SOURCES[source])]
 
 
 def _all_rows_cte(source: str | None = None) -> str:
     selects: list[str] = []
-    source_items = [(source, SOURCES[source])] if source else SOURCES.items()
-    for source_name, source_config in source_items:
+    for source_name, source_config in _source_items(source):
         for kind in SheetKind:
             table = source_config.tables[kind].main
             selects.append(
@@ -141,7 +169,7 @@ SELECT
   order_shipping_month_count,
   cancel_row_count,
   expired_row_count
-FROM order_month_flags{_source_filter(source)}
+FROM order_month_flags
 WHERE order_shipping_month_count >= 2
   AND order_month_count > 0
   AND shipping_month_count > 0
@@ -152,30 +180,7 @@ def lineitem_mismatch_detail_sql(source: str | None = None, *, include_out_of_sc
     where = "" if include_out_of_scope else f"WHERE audit_classification != '{AuditClassification.OUT_OF_SCOPE.value}'"
     return f"""{audit_base_ctes(source)}
 SELECT
-  source,
-  sheet_type,
-  order_name,
-  observed_lineitem_sku,
-  observed_lineitem_id,
-  expected_initial_lineitem_id,
-  baseline_lineitem_ids,
-  observed_source_yyyymm,
-  initial_order_yyyymm,
-  involved_months,
-  order_month_count,
-  shipping_month_count,
-  order_shipping_month_count,
-  cancel_row_count,
-  expired_row_count,
-  source_file_id,
-  source_file_name,
-  source_row_number,
-  row_hash,
-  created_at,
-  updated_at,
-  cancelled_at,
-  audit_classification,
-  audited_at
+  {",\n  ".join(AUDIT_RESULT_COLUMNS)}
 FROM audit_rows
 {where}
 ORDER BY
@@ -238,6 +243,17 @@ PARTITION BY DATE(audited_at)
 CLUSTER BY source, audit_classification, order_name, observed_source_yyyymm;"""
 
 
+def insert_audit_results_sql(table_ref: str, source: str | None = None) -> str:
+    return f"""{audit_base_ctes(source)}
+INSERT INTO `{table_ref}` (
+  {",\n  ".join(AUDIT_RESULT_COLUMNS)}
+)
+SELECT
+  {",\n  ".join(AUDIT_RESULT_COLUMNS)}
+FROM audit_rows
+WHERE audit_classification != '{AuditClassification.OUT_OF_SCOPE.value}';"""
+
+
 def build_audit_sql_plan(
     source: str | None = None,
     *,
@@ -248,4 +264,5 @@ def build_audit_sql_plan(
         detail_sql=lineitem_mismatch_detail_sql(source),
         cross_month_sql=cross_month_candidate_sql(source),
         result_table_ddl_sql=create_audit_result_table_sql(result_table),
+        result_table_insert_sql=insert_audit_results_sql(result_table, source),
     )
