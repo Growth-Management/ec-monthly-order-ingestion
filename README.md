@@ -31,6 +31,24 @@ python scripts/run_monthly_order_ingestion.py \
 
 通常運用では `--mode delta` を使います。manifest に成功記録がないファイル、または Drive `modifiedTime` が前回取り込み時より新しいファイルだけ処理します。
 
+## 監査
+
+月またぎ注文・出荷、およびキャンセルに伴う商品情報変更による `lineitem_id` 差異を確認します。
+
+```bash
+python scripts/run_monthly_order_audit.py --query summary
+python scripts/run_monthly_order_audit.py --source pta --query details --limit 200
+```
+
+DDL や監査結果保存用 INSERT は SQL 表示のみです。実行が必要な場合は、出力 SQL を GCP コンソール上で確認してから実行します。
+
+```bash
+python scripts/run_monthly_order_audit.py --query ddl
+python scripts/run_monthly_order_audit.py --query insert
+```
+
+詳細は [docs/lineitem_audit_ja.md](docs/lineitem_audit_ja.md) を参照してください。
+
 ## 自動転送
 
 Cloud Run Jobs + Cloud Scheduler で運用します。
