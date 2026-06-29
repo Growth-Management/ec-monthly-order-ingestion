@@ -14,7 +14,7 @@ from monthly_order_ingestion.bigquery_execution import (
 )
 from monthly_order_ingestion.config import SOURCES, SheetKind
 from monthly_order_ingestion.drive_discovery import TargetFile
-from monthly_order_ingestion.google_clients import AUTHORIZED_USER_JSON_ENV, authorized_user_info_from_env
+from monthly_order_ingestion.google_clients import AUTHORIZED_USER_JSON_ENV, authorized_user_info_from_env, execute_with_retry
 
 
 def test_select_target_files_requires_exact_name_and_google_sheet() -> None:
@@ -226,3 +226,16 @@ def test_authorized_user_info_supports_json_env(monkeypatch=None) -> None:
         token_info = authorized_user_info_from_env()
 
     assert token_info["refresh_token"] == "refresh-token"
+
+
+def test_execute_with_retry_retries_connection_reset() -> None:
+    attempts = {"count": 0}
+
+    def flaky_operation():
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise ConnectionResetError("reset")
+        return "ok"
+
+    assert execute_with_retry(flaky_operation, max_attempts=2, base_sleep_seconds=0) == "ok"
+    assert attempts["count"] == 2

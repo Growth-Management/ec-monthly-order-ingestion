@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 import json
 import os
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -36,6 +37,25 @@ BIGQUERY_SCOPES = ("https://www.googleapis.com/auth/cloud-platform",)
 
 AUTHORIZED_USER_JSON_ENV = "GOOGLE_AUTHORIZED_USER_JSON"
 AUTHORIZED_USER_FILE_ENV = "GOOGLE_AUTHORIZED_USER_FILE"
+
+
+def is_retryable_api_error(exc: BaseException) -> bool:
+    if isinstance(exc, (ConnectionResetError, TimeoutError)):
+        return True
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    return status in {429, 500, 502, 503, 504}
+
+
+def execute_with_retry(operation, *, max_attempts: int = 5, base_sleep_seconds: float = 1.0):
+    attempt = 1
+    while True:
+        try:
+            return operation()
+        except Exception as exc:
+            if attempt >= max_attempts or not is_retryable_api_error(exc):
+                raise
+            time.sleep(base_sleep_seconds * (2 ** (attempt - 1)))
+            attempt += 1
 
 
 def authorized_user_info_from_env() -> dict | None:
@@ -86,7 +106,7 @@ def list_drive_folder_files(drive_service: object, folder_id: str) -> list[Drive
     )
     while True:
         response = (
-            drive_service.files()
+            execute_with_retry(lambda: drive_service.files()
             .list(
                 q=f"'{folder_id}' in parents and trashed = false",
                 fields=fields,
@@ -95,7 +115,7 @@ def list_drive_folder_files(drive_service: object, folder_id: str) -> list[Drive
                 supportsAllDrives=True,
                 includeItemsFromAllDrives=True,
             )
-            .execute()
+            .execute())
         )
         for item in response.get("files", []):
             files.append(
@@ -117,9 +137,9 @@ def list_drive_folder_files(drive_service: object, folder_id: str) -> list[Drive
 
 def list_spreadsheet_sheets(sheets_service: object, spreadsheet_id: str) -> list[SheetInfo]:
     response = (
-        sheets_service.spreadsheets()
+        execute_with_retry(lambda: sheets_service.spreadsheets()
         .get(spreadsheetId=spreadsheet_id, fields="sheets(properties(sheetId,title,gridProperties))")
-        .execute()
+        .execute())
     )
     sheets: list[SheetInfo] = []
     for sheet in response.get("sheets", []):
@@ -138,14 +158,14 @@ def list_spreadsheet_sheets(sheets_service: object, spreadsheet_id: str) -> list
 
 def read_sheet_values(sheets_service: object, spreadsheet_id: str, sheet_title: str) -> list[list[str]]:
     response = (
-        sheets_service.spreadsheets()
+        execute_with_retry(lambda: sheets_service.spreadsheets()
         .values()
         .get(
             spreadsheetId=spreadsheet_id,
             range=f"'{sheet_title}'",
             valueRenderOption="FORMATTED_VALUE",
         )
-        .execute()
+        .execute())
     )
     return response.get("values", [])
 

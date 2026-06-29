@@ -19,6 +19,7 @@ from monthly_order_ingestion.bigquery_execution import (
 from monthly_order_ingestion.config import PROJECT_ID, SHEET_TITLES, SOURCES, SheetKind
 from monthly_order_ingestion.google_clients import (
     build_google_clients,
+    execute_with_retry,
     fetch_manifest_records,
     list_drive_folder_files,
     list_spreadsheet_sheets,
@@ -44,7 +45,7 @@ def export_spreadsheet_xlsx(drive_service: Any, spreadsheet_id: str, output_path
         downloader = MediaIoBaseDownload(file_obj, request)
         done = False
         while not done:
-            _status, done = downloader.next_chunk()
+            _status, done = execute_with_retry(lambda: downloader.next_chunk())
 
 
 def normalize_sheet_to_jsonl(
@@ -174,12 +175,25 @@ def main() -> None:
         print(f"# {source_name}: {len(targets)} exact-match target files")
 
         for target in targets:
-            sheets = list_spreadsheet_sheets(clients.sheets, target.source_file_id)
-            plan = build_file_plan(
-                target,
-                sheets,
-                {kind: manifest_by_kind.get(kind, {}).get(target.source_file_id) for kind in SheetKind},
-            )
+            try:
+                sheets = list_spreadsheet_sheets(clients.sheets, target.source_file_id)
+                plan = build_file_plan(
+                    target,
+                    sheets,
+                    {kind: manifest_by_kind.get(kind, {}).get(target.source_file_id) for kind in SheetKind},
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"ERROR {target.source} {target.source_yyyymm}: failed to inspect spreadsheet: {exc}", file=sys.stderr)
+                if not args.dry_run:
+                    for kind, tables in source_config.tables.items():
+                        run_parameterized_error_manifest(
+                            clients.bigquery,
+                            build_bigquery_execution_plan(kind, tables, load_source_uri_or_path="").manifest_error_sql_template,
+                            target=target,
+                            kind=kind,
+                            error_message=f"failed to inspect spreadsheet: {exc}",
+                        )
+                continue
             kinds_to_process: list[SheetKind] = []
             for kind in SheetKind:
                 if kind not in plan.sheet_selection.found:
@@ -193,7 +207,21 @@ def main() -> None:
                 continue
 
             xlsx_path = xlsx_dir / f"{target.source}_{target.source_yyyymm}_{target.source_file_id}.xlsx"
-            export_spreadsheet_xlsx(clients.drive, target.source_file_id, xlsx_path)
+            try:
+                export_spreadsheet_xlsx(clients.drive, target.source_file_id, xlsx_path)
+            except Exception as exc:  # noqa: BLE001
+                print(f"ERROR {target.source} {target.source_yyyymm}: failed to export spreadsheet: {exc}", file=sys.stderr)
+                if not args.dry_run:
+                    for kind in kinds_to_process:
+                        tables = source_config.tables[kind]
+                        run_parameterized_error_manifest(
+                            clients.bigquery,
+                            build_bigquery_execution_plan(kind, tables, load_source_uri_or_path="").manifest_error_sql_template,
+                            target=target,
+                            kind=kind,
+                            error_message=f"failed to export spreadsheet: {exc}",
+                        )
+                continue
             for kind in kinds_to_process:
                 try:
                     print(process_sheet(clients, target=target, kind=kind, xlsx_path=xlsx_path, output_dir=output_dir, dry_run=args.dry_run))
