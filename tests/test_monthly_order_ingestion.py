@@ -252,6 +252,8 @@ def test_audit_detail_sql_classifies_only_unique_initial_lineitems_as_auto_corre
     assert "auto_correctable" in plan.detail_sql
     assert "needs_review_no_matching_initial_order_sku" in plan.detail_sql
     assert "needs_review_non_unique_initial_lineitem" in plan.detail_sql
+    assert "single_initial_lineitem_but_sku_changed" in plan.detail_sql
+    assert "observed_lineitem_id_exists_in_initial_order" in plan.detail_sql
 
 
 def test_audit_cross_month_sql_supports_source_filter() -> None:
@@ -266,6 +268,8 @@ def test_audit_result_insert_sql_excludes_out_of_scope_rows() -> None:
     plan = build_audit_sql_plan(result_table="project.dataset.audit_results")
 
     assert "INSERT INTO `project.dataset.audit_results`" in plan.result_table_insert_sql
+    assert "audit_reason" in plan.result_table_insert_sql
+    assert "initial_order_lineitem_ids" in plan.result_table_insert_sql
     assert "WHERE audit_classification != 'out_of_scope'" in plan.result_table_insert_sql
 
 
@@ -273,5 +277,7 @@ def test_audit_result_table_ddl_is_partitioned_and_clustered() -> None:
     plan = build_audit_sql_plan(result_table="project.dataset.audit_results")
 
     assert "CREATE TABLE IF NOT EXISTS `project.dataset.audit_results`" in plan.result_table_ddl_sql
+    assert "audit_reason STRING NOT NULL" in plan.result_table_ddl_sql
+    assert "initial_order_lineitem_ids ARRAY<STRING>" in plan.result_table_ddl_sql
     assert "PARTITION BY DATE(audited_at)" in plan.result_table_ddl_sql
-    assert "CLUSTER BY source, audit_classification, order_name, observed_source_yyyymm" in plan.result_table_ddl_sql
+    assert "CLUSTER BY source, audit_classification, audit_reason, order_name" in plan.result_table_ddl_sql
