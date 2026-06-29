@@ -13,6 +13,9 @@ from monthly_order_ingestion.config import PROJECT_ID, SOURCES
 from monthly_order_ingestion.google_clients import build_google_clients
 
 
+PRINT_ONLY_QUERIES = {"ddl", "insert"}
+
+
 def print_rows(rows: list[bigquery.table.Row]) -> None:
     for row in rows:
         print(dict(row.items()))
@@ -29,15 +32,15 @@ def main() -> None:
     parser.add_argument("--source", choices=sorted(SOURCES), help="Optional source filter.")
     parser.add_argument(
         "--query",
-        choices=["summary", "details", "cross-month", "ddl"],
+        choices=["summary", "details", "cross-month", "ddl", "insert"],
         default="summary",
-        help="Audit query to print or execute. ddl only prints the proposed result table DDL.",
+        help="Audit query to print or execute. ddl and insert only print SQL for GCP console review.",
     )
     parser.add_argument("--limit", type=int, default=100, help="Row limit for details and cross-month outputs.")
     parser.add_argument(
         "--result-table",
         default="ice-ec-project.ice_ec_source.monthly_order_lineitem_audit_results",
-        help="Proposed audit result table reference for DDL output.",
+        help="Proposed audit result table reference for DDL and insert SQL output.",
     )
     parser.add_argument("--print-sql", action="store_true", help="Print SQL instead of running it.")
     args = parser.parse_args()
@@ -48,10 +51,11 @@ def main() -> None:
         "details": plan.detail_sql,
         "cross-month": plan.cross_month_sql,
         "ddl": plan.result_table_ddl_sql,
+        "insert": plan.result_table_insert_sql,
     }
     sql = sql_by_query[args.query]
 
-    if args.print_sql or args.query == "ddl":
+    if args.print_sql or args.query in PRINT_ONLY_QUERIES:
         print(sql)
         return
 
