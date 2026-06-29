@@ -254,6 +254,21 @@ def test_audit_detail_sql_classifies_only_unique_initial_lineitems_as_auto_corre
     assert "needs_review_non_unique_initial_lineitem" in plan.detail_sql
 
 
+def test_audit_cross_month_sql_supports_source_filter() -> None:
+    plan = build_audit_sql_plan("fabli")
+
+    assert "monthly_order_fabli" in plan.cross_month_sql
+    assert "monthly_order_pta" not in plan.cross_month_sql
+    assert "FROM order_month_flags\nWHERE order_shipping_month_count >= 2" in plan.cross_month_sql
+
+
+def test_audit_result_insert_sql_excludes_out_of_scope_rows() -> None:
+    plan = build_audit_sql_plan(result_table="project.dataset.audit_results")
+
+    assert "INSERT INTO `project.dataset.audit_results`" in plan.result_table_insert_sql
+    assert "WHERE audit_classification != 'out_of_scope'" in plan.result_table_insert_sql
+
+
 def test_audit_result_table_ddl_is_partitioned_and_clustered() -> None:
     plan = build_audit_sql_plan(result_table="project.dataset.audit_results")
 
