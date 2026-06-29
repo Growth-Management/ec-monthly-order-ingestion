@@ -48,6 +48,7 @@ python scripts/run_monthly_order_audit.py --query insert
 ```
 
 詳細は [docs/lineitem_audit_ja.md](docs/lineitem_audit_ja.md) を参照してください。
+GCP コンソールで実行する SQL は [docs/gcp_console_audit_sql_ja.md](docs/gcp_console_audit_sql_ja.md) を参照してください。
 
 ## 自動転送
 
