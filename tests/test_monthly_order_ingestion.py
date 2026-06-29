@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+from monthly_order_ingestion.audit import build_audit_sql_plan
 from monthly_order_ingestion.drive_discovery import DriveFile, select_target_files
 from monthly_order_ingestion.manifest import IngestionDecision, ManifestRecord, decide_ingestion
 from monthly_order_ingestion.normalization import normalize_headers, normalize_rows, row_hash
@@ -239,3 +240,23 @@ def test_execute_with_retry_retries_connection_reset() -> None:
 
     assert execute_with_retry(flaky_operation, max_attempts=2, base_sleep_seconds=0) == "ok"
     assert attempts["count"] == 2
+
+
+def test_audit_detail_sql_classifies_only_unique_initial_lineitems_as_auto_correctable() -> None:
+    plan = build_audit_sql_plan("pta")
+
+    assert "monthly_order_pta" in plan.detail_sql
+    assert "monthly_order_fabli" not in plan.detail_sql
+    assert "b.baseline_lineitem_id_count != 1" in plan.detail_sql
+    assert "r.lineitem_id != b.first_order_line.lineitem_id" in plan.detail_sql
+    assert "auto_correctable" in plan.detail_sql
+    assert "needs_review_no_matching_initial_order_sku" in plan.detail_sql
+    assert "needs_review_non_unique_initial_lineitem" in plan.detail_sql
+
+
+def test_audit_result_table_ddl_is_partitioned_and_clustered() -> None:
+    plan = build_audit_sql_plan(result_table="project.dataset.audit_results")
+
+    assert "CREATE TABLE IF NOT EXISTS `project.dataset.audit_results`" in plan.result_table_ddl_sql
+    assert "PARTITION BY DATE(audited_at)" in plan.result_table_ddl_sql
+    assert "CLUSTER BY source, audit_classification, order_name, observed_source_yyyymm" in plan.result_table_ddl_sql
