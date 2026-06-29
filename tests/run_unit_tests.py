@@ -10,7 +10,9 @@ from test_monthly_order_ingestion import (  # noqa: E402
     test_bigquery_execution_plan_includes_success_and_error_manifest_sql,
     test_decide_ingestion_uses_successful_manifest_modified_time,
     test_authorized_user_info_supports_json_env,
+    test_audit_cross_month_sql_supports_source_filter,
     test_audit_detail_sql_classifies_only_unique_initial_lineitems_as_auto_correctable,
+    test_audit_result_insert_sql_excludes_out_of_scope_rows,
     test_audit_result_table_ddl_is_partitioned_and_clustered,
     test_execute_with_retry_retries_connection_reset,
     test_manifest_success_zero_rows_sql_uses_literal_target_metadata,
@@ -40,6 +42,8 @@ def main() -> None:
         test_cancel_fallback_key_uses_updated_at_and_source_row_number,
         test_manifest_success_zero_rows_sql_uses_literal_target_metadata,
         test_audit_detail_sql_classifies_only_unique_initial_lineitems_as_auto_correctable,
+        test_audit_cross_month_sql_supports_source_filter,
+        test_audit_result_insert_sql_excludes_out_of_scope_rows,
         test_audit_result_table_ddl_is_partitioned_and_clustered,
     ]
     for test in tests:
